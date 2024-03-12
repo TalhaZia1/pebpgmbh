@@ -26,6 +26,14 @@ typedef enum {
     CMD_NONE
 } commands;
 
+/* Stating the Number of Seconds Increment */
+typedef enum {
+    NORMAL      = 1U,   
+    SPEED_10X   = 10U, 
+    SPEED_100X  = 100U,
+    SPEED_1000X = 1000U,
+} speed;
+
 typedef struct {
     uint8_t hours;
     uint8_t minutes;
@@ -59,9 +67,22 @@ typedef struct {
     char       const done_msg[50U];
 } t_model;
 
+typedef struct {
+    t_time real_time;
+    uint8_t current_activity;
+    state stateMachine;
+    bool printUnDoneMessage;
+    bool printReminder;
+    commands user_command;
+    uint8_t timeCounter; 
+    speed const exe_speed;
+} t_params;
+
 /*************************/
 /* Variables Definitions */
 /*************************/
+
+static const t_params RESET_PARAMS = {{0U, 0U, 0U}, (uint8_t)IDLE, INIT, false, false, CMD_NONE, 0U, NORMAL };
 
 static t_model dataModel[TOTAL_ACTIVITIES] = {
     /*0*/ {BREAK_FAST      , /*start time*/ { 6U,30U}, /*end time*/ { 8U,30U },UNDONE,"Have you eaten breakfast ?",      "You have already eaten your breakfast"},
@@ -81,7 +102,7 @@ static t_model dataModel[TOTAL_ACTIVITIES] = {
 void printWelcomeMessage(void);
 bool isTimeValid(t_time const * const time);
 bool getTime(t_time * const time);
-void updateTime(t_time * const time);
+void updateTime(t_time * const time, uint16_t const step);
 bool isTimeAboutToEnd(t_time const * const end_time, t_time const * const time);
 bool activityTimeOut(t_time const * const end_time, t_time const * const time);
 bool isGreaterThan(t_time const * const activityTime, t_time const * const time);
@@ -89,6 +110,7 @@ bool isLessThan(t_time const * const activityTime, t_time const * const time);
 bool checkActivity(uint8_t const index, t_time const * const time);
 uint8_t checkAll(t_time const * const time);
 void handle_non_blocking_input(commands * const cmd);
+bool userDelay(uint8_t * const timeCounter, commands * const cmd);
 
 /********************/
 /* APIs Definitions */
@@ -106,10 +128,18 @@ bool getTime(t_time * const time) {
     return (scanf("%hhu:%hhu", &time->hours, &time->minutes) == 2U);
 }
 
-void updateTime(t_time * const time) {
-    /* Updating Time every 1 second */
-    sleep(1U);
-    
+void updateTime(t_time * const time, uint16_t const step) {
+    /* Converting steps to microseconds */
+    /* In case of following speed scenarios */
+    /* NORMAL       ==> 1sec == 1sec*/
+    /* SPEED_10X    ==> 1sec == (1/10)sec*/
+    /* SPEED_100X   ==> 1sec == (1/100)sec*/
+    /* SPEED_1000X  ==> 1sec == (1/1000)sec*/
+    /* Thus speeding up actual 1sec as per scenario */
+
+    uint16_t sleep_duration = 1000000/step; 
+    usleep(sleep_duration);
+
     /* Update Seconds */
     if (time->seconds != 59U) {
         time->seconds++;
@@ -222,25 +252,31 @@ void handle_non_blocking_input(commands * const cmd) {
     }
 }
 
+bool userDelay(uint8_t * const timeCounter, commands * const cmd) {
+    bool result = false;
+    if (*timeCounter >= 3U) {
+        *timeCounter = 0U;
+        *cmd = CMD_NONE;
+        result = true;
+    } else {
+        *timeCounter = *timeCounter + 1U;
+    }
+    return result;
+}
+
 /*****************/
 /* Main Function */
 /*****************/
 int main(void) {
-    t_time real_time = {0U, 0U, 0U};
-    uint8_t current_activity = (uint8_t)IDLE;
-    state stateMachine = INIT;
-    bool printUnDoneMessage = false;
-    bool printReminder = false;
-    commands user_command = CMD_NONE;
-
+    t_params op_params = RESET_PARAMS;
     printWelcomeMessage();
 
     while(1) {
-        switch (stateMachine) {
+        switch (op_params.stateMachine) {
             case INIT:
                 /* Taking Time Input from User on Startup */
-                bool input = getTime(&real_time);
-                bool isValid = isTimeValid(&real_time);
+                bool input = getTime(&op_params.real_time);
+                bool isValid = isTimeValid(&op_params.real_time);
                 if (!input) {
                     printf("[ERROR] Try again in correct format 'hh:mm'\n");
                 }
@@ -252,33 +288,33 @@ int main(void) {
                 else {
                     printf("[INFO] Time Accepted \n");
                     printf("[INFO] Program will keep you update about your daily activites \n");
-                    stateMachine = SILENT;
+                    op_params.stateMachine = SILENT;
                 }
                 break;
             
             case SILENT:
-                current_activity = checkAll(&real_time);
-                stateMachine = (current_activity != (uint8_t)IDLE) ? PENDING_ACTIVITY : SILENT;
+                op_params.current_activity = checkAll(&op_params.real_time);
+                op_params.stateMachine = (op_params.current_activity != (uint8_t)IDLE) ? PENDING_ACTIVITY : SILENT;
                 break;
 
             case PENDING_ACTIVITY:
-                if (dataModel[current_activity].state == DONE) {
-                    stateMachine = ACTIVITY_COMPLETED;
+                if (dataModel[op_params.current_activity].state == DONE) {
+                    op_params.stateMachine = ACTIVITY_COMPLETED;
                 }
                 else {
-                    if (!printUnDoneMessage) {
+                    if (!op_params.printUnDoneMessage) {
                         /* Printing Activity Start Message */
-                        printf("%s\n",dataModel[current_activity].undone_msg);
-                        printUnDoneMessage = true;
+                        printf("%s\n",dataModel[op_params.current_activity].undone_msg);
+                        op_params.printUnDoneMessage = true;
                     }
-                    else if (!printReminder && isTimeAboutToEnd(&dataModel[current_activity].endTime, &real_time)) {
+                    else if (!op_params.printReminder && isTimeAboutToEnd(&dataModel[op_params.current_activity].endTime, &op_params.real_time)) {
                         /* Printing Activity Reminder Message */
-                        printf("%s\n",dataModel[current_activity].undone_msg);
-                        printReminder = true;
+                        printf("%s\n",dataModel[op_params.current_activity].undone_msg);
+                        op_params.printReminder = true;
                     }
-                    else if (activityTimeOut(&dataModel[current_activity].endTime, &real_time)) {
+                    else if (activityTimeOut(&dataModel[op_params.current_activity].endTime, &op_params.real_time)) {
                         /* Activity is undone but Activity timeout is Activated */
-                        stateMachine = SILENT;
+                        op_params.stateMachine = SILENT;
                     }
                     else {
                         /* Default case */
@@ -288,8 +324,8 @@ int main(void) {
 
             case ACTIVITY_COMPLETED:
                 /* Activity is Complete but Activity timeout is still pending */
-                if (activityTimeOut(&dataModel[current_activity].endTime, &real_time)) {
-                    stateMachine = SILENT;
+                if (activityTimeOut(&dataModel[op_params.current_activity].endTime, &op_params.real_time)) {
+                    op_params.stateMachine = SILENT;
                 }
                 break;
 
@@ -298,33 +334,40 @@ int main(void) {
         }
 
         /* For INIT state, waiting for user to enter current_time */
-        if (stateMachine != INIT) {
+        if (op_params.stateMachine != INIT) {
+            
+            /* Updating Time */
+            updateTime(&op_params.real_time, op_params.exe_speed);
+
             /* Using Linux APIs for handling commands on runtime */
-            handle_non_blocking_input(&user_command);
+            handle_non_blocking_input(&op_params.user_command);
 
             /* Parsing user Input command on runtime */
-            if (user_command != CMD_NONE) {
-
-                if (user_command == CMD_DONE) {
-                    dataModel[current_activity].state = DONE;
+            if (op_params.user_command != CMD_NONE) {
+                if (op_params.user_command == CMD_DONE) {
+                    dataModel[op_params.current_activity].state = DONE;
                 } 
-                else if (user_command == CMD_NOW) {
-                    if (dataModel[current_activity].toDo == IDLE) {
-                        printf("Nothing to do right now\n");
+                else if (op_params.user_command == CMD_NOW) {
+                    if (dataModel[op_params.current_activity].toDo == IDLE) {
+                        if (userDelay(&op_params.timeCounter, &op_params.user_command)) {
+                            printf("Nothing to do right now\n");
+                        }
                     } 
                     else {
-                        if (dataModel[current_activity].state == DONE) {
-                            printf("%s\n",dataModel[current_activity].done_msg);
+                        if (dataModel[op_params.current_activity].state == DONE) {
+                            if (userDelay(&op_params.timeCounter, &op_params.user_command)) {
+                                printf("%s\n",dataModel[op_params.current_activity].done_msg);
+                            }
                         } else {
-                            printf("%s\n",dataModel[current_activity].undone_msg);
+                            if (userDelay(&op_params.timeCounter, &op_params.user_command)) {
+                                printf("%s\n",dataModel[op_params.current_activity].undone_msg);
+                            }
                         }
                     }
                 } 
                 else {
                     /* Do Nothing - Default Case */
                 }
-                user_command = CMD_NONE;
-                tcflush(STDIN_FILENO, TCIFLUSH);
             }
         }
     }
